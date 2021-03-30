@@ -1,0 +1,10 @@
+refs
+textures
+instructions
+drogon.wiki
+_temp
+design
+*.ffs_db
+*.ffs_lock
+*.bat
+*.txt
