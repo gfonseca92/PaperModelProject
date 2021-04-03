@@ -26,14 +26,24 @@ class SvgObjects():
     def get_paths(self):
         doc = minidom.parse(self.svg_file_path)
         g_list = doc.getElementsByTagName(self.main_tag_name)
+        label = g_list[0].getAttribute(self.part_level)
+        first_time = True
+        group_name = ''
         for node in g_list:
+            last_label_name = label
             label = node.getAttribute(self.part_level)
             group = node.getElementsByTagName(self.main_tag_name)
             if not group and 'defs' not in node.attributes._ownerElement.parentNode.localName and len(label) > 3:
-                self.tree_dict[label] = []
+                if first_time:
+                    group_name = last_label_name
+                    first_time = False
+                key = label + '-' + group_name
+                self.tree_dict[key] = []
                 for child in node.getElementsByTagName(self.element_name):
-                    self.tree_dict[label].append([child.getAttribute(self.line_attribute),
-                                                  child.getAttribute(self.trans_attribute)])
+                    self.tree_dict[key].append([child.getAttribute(self.line_attribute),
+                                                child.getAttribute(self.trans_attribute)])
+            else:
+                first_time = True
 
     def get_lines_from_path(self, part_objs, part_name):
         coord_list = []
@@ -112,14 +122,14 @@ class Part:
         plt.text(self.cg['x0'], self.cg['y0'], self.name)
 
     def plot_points(self):
-        plt.scatter(self.coords[:, 0], self.coords[:, 1], marker='s', color='r', s=5)
+        plt.scatter(self.coords[:, 0], self.coords[:, 1], marker='s', color='r', s=1)
 
     def plot_lines(self):
         for i in range(0, len(self.lines)):
-            plt.plot(self.lines[i][0], self.lines[i][1], 'k-')
+            plt.plot(self.lines[i][0], self.lines[i][1], 'k-', lw=1)
 
     def plot_shield(self):
-        plt.plot(self.shield[:, 0], self.shield[:, 1], 'r', lw=1, zorder=-1)
+        plt.plot(self.shield[:, 0], self.shield[:, 1], 'r', lw=1)
 
     def get_border(self):
         hull = ConvexHull(self.coords)
@@ -250,31 +260,115 @@ class Part:
 
 # ======================================================================================================================
 # ======================================================================================================================
+#                                           CLASSE PARA CONFIGURAÇÕES DE FOLHAS
+# ======================================================================================================================
+class SheetConfig:
+
+    def __init__(self):
+        # size_names = ['A4', 'A3', 'A2', 'A1', 'A0']
+        # size_list = [(297, 210), (420, 297), (594, 420), (841, 594), (1189, 841)]
+        # area_list = [297*210, 420*297, 594*420, 841*594, 1189*841]
+        size_names = ['A4', 'A3', 'A1']
+        size_list = [(297, 210), (420, 297), (841, 594)]
+        area_list = [297*210, 420*297, 841*594]
+        self.sheet_size = dict(zip(size_names, size_list))
+        self.sheet_area = dict(zip(size_names, area_list))
+        self.x_grid = None
+        self.y_grid = None
+        self.theta_grid = None
+        self.paper_name = None
+        self.paper_area = None
+        self.paper_size = None
+
+    def find_best_paper_by_dims(self, part_dims):
+        for key, value in self.sheet_size.items():
+            if value[0] > part_dims[0] and value[1] > part_dims[1]:
+                self.paper_area = self.sheet_area[key]
+                self.paper_name = key
+                self.paper_size = value
+                break
+        self.generate_grid()
+
+    def find_best_paper_by_area(self, part_area):
+        min_diff = 1000000000
+        best_key = ''
+        for key, value in self.sheet_area.items():
+            if abs(value - part_area) < min_diff:
+                min_diff = abs(value - part_area)
+                best_key = key
+        self.paper_area = self.sheet_area[best_key]
+        self.paper_name = best_key
+        self.paper_size = self.sheet_size[best_key]
+        self.generate_grid()
+
+    def generate_grid(self):
+        self.theta_grid = np.linspace(-360, 360, 7201)
+        self.x_grid = np.linspace(-(self.paper_size[0] - 5.0)/2, (self.paper_size[0] - 5.0)/2, 10000)
+        self.y_grid = np.linspace(-(self.paper_size[1] - 5.0)/2, (self.paper_size[1] - 5.0)/2, 10000)
+
+
+# ======================================================================================================================
+# ======================================================================================================================
 #                                CLASSE PARA GESTÃO DAS PEÇAS EM UMA OU MAIS FOLHAS DE IMPRESSAO
 # ======================================================================================================================
-class PartsManager():
+class PartsManager(SheetConfig):
 
-    def __init__(self, parts_dict, paper_size=(210, 297)):
+    def __init__(self, parts_dict):
         super(PartsManager, self).__init__()
         self.parts_dict = parts_dict
+        self.sort_parts_by_area()
         self.detect_collision()
-        self.paper_size = paper_size
-        self.paper_area = self.paper_size[0] * self.paper_size[1]
         self.total_area = self.sum_total_area()
+        self.part_groups = {}
+        self.whole_assembly = {}
+        self.sheet_groups = {}
+        self.detect_groups()
         self.report()
-        self.part_groups = []
+
+    def detect_groups(self):
+        self.whole_assembly['whole'] = []
+        for key in self.parts_dict.keys():
+            group_name = key.split('-')[1]
+            self.whole_assembly['whole'].append(self.parts_dict[key])
+            if group_name not in self.part_groups.keys():
+                self.part_groups[group_name] = []
+                self.part_groups[group_name].append(self.parts_dict[key])
+            else:
+                self.part_groups[group_name].append(self.parts_dict[key])
 
     def report(self):
-        if self.total_area < self.paper_area:
-            print(
-                'A área total das peças é menor que a área de  uma folha: ' + str(round(self.total_area)) + ' contra ' +
-                str(round(self.paper_area)))
-            print('\n Dá para tentar organizar tudo em uma folha')
+        print('Grupos Pré-Detectados: ' + str(self.part_groups.keys()))
+
+    def sum_total_area(self):
+        return sum([value.area for key, value in self.parts_dict.items()])
+
+    def sort_parts_by_area(self):
+        self.parts_dict = {key: v for key, v in sorted(self.parts_dict.items(),
+                                                       key=lambda item: item[1].area, reverse=True)}
+
+    def display_parts(self, part_list=None, group_name=None, paper_name=None):
+        plt.figure(figsize=(40, 40))
+        if part_list is None:
+            for part in self.parts_dict.keys():
+                self.parts_dict[part].plot_part()
+            ax = plt.gca()
+            ax.margins(0.1)
+            ax.set_aspect('equal', 'datalim')
         else:
-            print(
-                'A área total das peças é maior que a área de uma folha: ' + str(round(self.total_area)) + ' contra ' +
-                str(round(self.paper_area)))
-            print('\n Vamos precisar de pelo menos ' + str(np.ceil(self.total_area / self.paper_area)) + ' folhas!')
+            for part in part_list:
+                part.plot_part()
+            plt.plot([self.x_grid.min()-2.5, self.x_grid.max()+2.5], [self.y_grid.min()-2.5, self.y_grid.min()-2.5], 'k-')
+            plt.plot([self.x_grid.min()-2.5, self.x_grid.max()+2.5], [self.y_grid.max()+2.5, self.y_grid.max()+2.5], 'k-')
+            plt.plot([self.x_grid.min()-2.5, self.x_grid.min()-2.5], [self.y_grid.min()-2.5, self.y_grid.max()+2.5], 'k-')
+            plt.plot([self.x_grid.max()+2.5, self.x_grid.max()+2.5], [self.y_grid.min()-2.5, self.y_grid.max()+2.5], 'k-')
+            ax = plt.gca()
+            ax.margins(0.1)
+            ax.set_aspect('equal', 'datalim')
+            if paper_name is not None:
+                plt.title(paper_name, fontsize=14)
+            if group_name is not None:
+                plt.savefig(group_name + '.png')
+            plt.close()
 
     def detect_collision(self, x_grid=None, y_grid=None):
         collision_list = []
@@ -285,18 +379,30 @@ class PartsManager():
             print('Colisões identificadas: ' + str(collision_list))
         return collision_list
 
-    def detect_collision_each_part(self, part_name, x_grid=None, y_grid=None):
+    def detect_collision_each_part(self, part_id, x_grid=None, y_grid=None, part_list=None):
         collision_list = []
-        for key, value in self.parts_dict.items():
-            if key != part_name and (part_name, key) not in collision_list:
-                if value.polygon.intersects(self.parts_dict[part_name].polygon):
-                    collision_list.append((part_name, key))
+        if part_list is None:
+            for key, value in self.parts_dict.items():
+                if key != part_id and (part_id, key) not in collision_list:
+                    if value.polygon.intersects(self.parts_dict[part_id].polygon):
+                        collision_list.append((part_id, key))
+        else:
+            for i in range(0, len(part_list)):
+                if i != part_id and (part_list[part_id].name, part_list[i].name) not in collision_list:
+                    if part_list[part_id].polygon.intersects(part_list[i].polygon):
+                        collision_list.append((part_list[part_id].name, part_list[i].name))
 
         if x_grid is not None and y_grid is not None:
-            min_x = self.parts_dict[part_name].shield[:, 0].min()
-            max_x = self.parts_dict[part_name].shield[:, 0].max()
-            min_y = self.parts_dict[part_name].shield[:, 1].min()
-            max_y = self.parts_dict[part_name].shield[:, 1].max()
+            if part_list is None:
+                min_x = self.parts_dict[part_id].shield[:, 0].min()
+                max_x = self.parts_dict[part_id].shield[:, 0].max()
+                min_y = self.parts_dict[part_id].shield[:, 1].min()
+                max_y = self.parts_dict[part_id].shield[:, 1].max()
+            else:
+                min_x = part_list[part_id].shield[:, 0].min()
+                max_x = part_list[part_id].shield[:, 0].max()
+                min_y = part_list[part_id].shield[:, 1].min()
+                max_y = part_list[part_id].shield[:, 1].max()
             if min_x <= x_grid.min():
                 collision_list.append('bateu na borda esquerda')
             elif max_x >= x_grid.max():
@@ -307,69 +413,64 @@ class PartsManager():
                 collision_list.append('bateu na borda superior')
         return collision_list
 
-    def sum_total_area(self):
-        return sum([value.area for key, value in self.parts_dict.items()])
-
-    def shuffle_parts(self):
-        aspect_ratio = 1
-        area_factor = 2.0
-        a = np.sqrt(self.total_area*area_factor/aspect_ratio)
-        b = a*aspect_ratio
-        x_grid = np.linspace(-b/2, b/2, 10000)
-        y_grid = np.linspace(-a/2, a/2, 10000)
-        theta_grid = np.linspace(-360, 360, 7201)
-
+    def shuffle_parts(self, part_list, group_name):
+        parts_sheet = []
+        parts_remaining = []
+        MAX_PART_ITER = 1000
         # Moving parts to origin
-        for key, value in self.parts_dict.items():
-            self.parts_dict[key].translate_part(10000, 10000)
-        plt.figure(figsize=(10, 10))
-        self.display_parts()
-        plt.plot([x_grid.min(), x_grid.max()], [y_grid.min(), y_grid.min()], 'k-')
-        plt.plot([x_grid.min(), x_grid.max()], [y_grid.max(), y_grid.max()], 'k-')
-        plt.plot([x_grid.min(), x_grid.min()], [y_grid.min(), y_grid.max()], 'k-')
-        plt.plot([x_grid.max(), x_grid.max()], [y_grid.min(), y_grid.max()], 'k-')
-        plt.savefig('../01_models/harry-potter/inicio_sorteio.png')
+        max_dim_0 = 0.
+        max_dim_1 = 0.
+        total_area = 0.
+        for i in range(0, len(part_list)):
+            part_list[i].translate_part(10000, 10000)
+            max_x_shield = part_list[i].shield[:, 0].max()
+            min_x_shield = part_list[i].shield[:, 0].min()
+            max_y_shield = part_list[i].shield[:, 1].max()
+            min_y_shield = part_list[i].shield[:, 1].min()
+            width = max_x_shield - min_x_shield
+            height = max_y_shield - min_y_shield
+            total_area += part_list[i].area
+            if width > max_dim_0:
+                max_dim_0 = width
+            if height > max_dim_1:
+                max_dim_1 = height
+        self.find_best_paper_by_dims([max_dim_0, max_dim_1])
+        area_by_dim = self.paper_area
+        self.find_best_paper_by_area(total_area)
+        area_by_area = self.paper_area
+        if area_by_dim > area_by_area:
+            self.find_best_paper_by_dims([max_dim_0, max_dim_1])
 
         # Randomly trying to position parts given a grid
-        self.sort_parts_by_area()
         count_iter = 1
-        for key, value in self.parts_dict.items():
+        for i in range(0, len(part_list)):
             count_local_iter = 1
-            while self.detect_collision_each_part(key, x_grid, y_grid):
-                x_pos = x_grid[np.random.randint(0, len(x_grid))]
-                y_pos = y_grid[np.random.randint(0, len(y_grid))]
-                self.parts_dict[key].translate_part(x_pos, y_pos)
-                theta = theta_grid[np.random.randint(0, len(theta_grid))]
-                self.parts_dict[key].rotate_part(theta)
+            while self.detect_collision_each_part(i, self.x_grid, self.y_grid, part_list):
+                x_pos = self.x_grid[np.random.randint(0, len(self.x_grid))]
+                y_pos = self.y_grid[np.random.randint(0, len(self.y_grid))]
+                part_list[i].translate_part(x_pos, y_pos)
+                theta = self.theta_grid[np.random.randint(0, len(self.theta_grid))]
+                part_list[i].rotate_part(theta)
                 count_local_iter += 1
-                if count_local_iter > 3000:
-                    plt.figure(figsize=(40, 40))
-                    self.display_parts()
-                    plt.plot([x_grid.min(), x_grid.max()], [y_grid.min(), y_grid.min()], 'k--')
-                    plt.plot([x_grid.min(), x_grid.max()], [y_grid.max(), y_grid.max()], 'k--')
-                    plt.plot([x_grid.min(), x_grid.min()], [y_grid.min(), y_grid.max()], 'k--')
-                    plt.plot([x_grid.max(), x_grid.max()], [y_grid.min(), y_grid.max()], 'k--')
-
-            print(count_iter, count_local_iter)
+                if count_local_iter > MAX_PART_ITER:
+                    break
+            if count_local_iter > MAX_PART_ITER:
+                part_list[i].translate_part(10000, 10000)
+                parts_remaining.append(part_list[i])
+            else:
+                parts_sheet.append(part_list[i])
             count_iter += 1
-        plt.figure(figsize=(40, 40))
+        self.display_parts(parts_sheet, group_name, self.paper_name)
+        return parts_sheet, parts_remaining
 
-        self.display_parts()
-        plt.plot([x_grid.min(), x_grid.max()], [y_grid.min(), y_grid.min()], 'k-')
-        plt.plot([x_grid.min(), x_grid.max()], [y_grid.max(), y_grid.max()], 'k-')
-        plt.plot([x_grid.min(), x_grid.min()], [y_grid.min(), y_grid.max()], 'k-')
-        plt.plot([x_grid.max(), x_grid.max()], [y_grid.min(), y_grid.max()], 'k-')
-        plt.savefig('../01_models/harry-potter/fim_sorteio.png')
-
-    def sort_parts_by_area(self):
-        self.parts_dict = {key: v for key, v in sorted(self.parts_dict.items(),
-                                                       key=lambda item: item[1].area, reverse=True)}
-
-    def display_parts(self):
-        for part in self.parts_dict.keys():
-            self.parts_dict[part].plot_part()
-        ax = plt.gca()
-        ax.set_aspect('equal', 'datalim')
-        ax.margins(0.1)
-
+    def organize_parts(self):
+        count_sheet = 1
+        for key, part_group in self.whole_assembly.items():
+            parts_list, parts_remaining = self.shuffle_parts(part_group, 'sheet_' + str(count_sheet) + '_' + key)
+            self.sheet_groups['sheet_' + str(count_sheet)] = parts_list
+            while parts_remaining:
+                count_sheet += 1
+                parts_list, parts_remaining = self.shuffle_parts(parts_remaining,
+                                                                 'sheet_' + str(count_sheet) + '_' + key)
+                self.sheet_groups['sheet_' + str(count_sheet)] = parts_list
 # ======================================================================================================================
